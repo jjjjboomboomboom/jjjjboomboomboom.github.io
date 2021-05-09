@@ -15,5 +15,5 @@ Here are some ideas to get you started:
 - ⚡ Fun fact: ...
 -->
 
-[摄影]()
+[摄影](https://github.com/jjjjboomboomboom/jjjjboomboomboom.github.io/blob/main/photograph.md)
 
