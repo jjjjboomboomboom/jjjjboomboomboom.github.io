@@ -178,3 +178,29 @@ select * from geek where c=N order by b limit 1;
 ps 定义为(c,b）的索引，实际上是（c,b,a)
 
 
+
+### 锁
+
+- 全局锁
+  - 主要用于全库逻辑备份，加全局读锁方法Flush tables with read lock（FTWRL），一致性读视图（single-transaction）可以代替FTWRL来进行备份，但前提是存储引擎需要支持事务，像MyISAM引擎，还是需要使用FTWRL。
+    - 当主库上备份时，在备份期间不能执行更新，业务处于中断时间
+    - 当从库上备份，那备份期间从库不能执行主库同步过来的binlog，会导致主从延迟。
+  - 不建议使用set global readonly=true的方式，避免数据库异常断开导致数据库一直处于只读状态。第二点是，这个值可能会被用于判断其他逻辑，例如主库还是备库。
+- 表级锁
+  - 表锁 lock tables read/write
+  - 元数据锁 MDL，不需要显示使用，在访问一个表的时候会自动加上；
+    - 读锁之间不互斥，因此你可以有多个线程同时对一张表增删改查。（由于隔离级别，读是读一个旧视图）
+    - 读写锁之间、写锁之间是互斥的，用来保证变更表结构操作的安全性。因此，如果有两个线程要同时给一个表加字段，其中一个要等另一个执行完才能开始执行。（安全地给热表加字段：使用wait n/nowait语法，如alter table tbl_name nowait add column/alter tbl_name wait n add column）
+    - 当你对一个表做DML（CURD）时，获取的是读锁，当你对一个表做DDL（create、alter、drop）时，获取的是写锁。
+
+例子
+
+![image](https://user-images.githubusercontent.com/32328586/117699625-a51b4b80-b1f7-11eb-8ad1-fea180495e1e.png)
+
+
+
+- 行锁
+
+
+
+
