@@ -290,3 +290,37 @@ select * from t where (a between 1 and 1000)  and (b between 50000 and 100000) o
 
 - 删掉误用的索引
 
+#### redo log 刷新到内存的四种场景
+- InnoDB的redo log 写满了，需要把checkpoint往前推进一下，把对应的log刷新到磁盘中。
+- 节点内存不足，无法容纳新的数据页，
+- 节点比较空闲的时候，负载低的时候
+- 正常关闭Mysql的时候
+
+第一种应该避免，因为此时所有的更新都会阻塞。
+第二种是常态，InnoDB使用缓冲池（buffer pool）管理内存。而当要读入的数据页没有在内存的时候，就必须到缓冲池中申请一个数据页。这时候只能把最久不使用的数据页从内存中淘汰掉：如果要淘汰的是一个干净页，就直接释放出来复用；但如果是脏页呢，就必须将脏页先刷到磁盘，变成干净页后才能复用。
+
+因此，InnoDB有刷脏页的控制策略，用于避免上述两种情况。
+
+- innodb_io_capacity 参数，它会告诉 InnoDB 你的磁盘能力。这个值建议设置成磁盘的 IOPS。
+磁盘的 IOPS 可以通过 fio 这个工具来测试，下面的语句是我用来测试磁盘随机读写的命令：
+> fio -filename=$filename -direct=1 -iodepth 1 -thread -rw=randrw -ioengine=psync -bs=16k -size=500M -numjobs=10 -runtime=10 -group_reporting -name=mytest
+
+- **参数 innodb_max_dirty_pages_pct 是脏页比例上限，默认值是 75%**
+
+![image](https://user-images.githubusercontent.com/32328586/128391100-b9f1433d-bbc4-4f6b-a85b-8d931233813e.png)
+
+影响因素两点
+  - 脏页的比例
+  - redo log 的写入速度
+
+- innodb_flush_neighbors参数：刷脏页时，会把隔壁也是脏页的数据页一起刷入到磁盘中。意义是可以减少IO操作，机械硬盘建议设置此参数，但假如磁盘是ssd，建议把这个参数设置为0，提高sql语句的相应时间。Mysql 8.0中该参数默认值为0。
+
+
+
+
+
+
+
+
+
+
