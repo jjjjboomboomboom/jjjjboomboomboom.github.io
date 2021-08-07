@@ -290,6 +290,45 @@ select * from t where (a between 1 and 1000)  and (b between 50000 and 100000) o
 
 - 删掉误用的索引
 
+#### 前缀索引
+例子：
+``` sql
+mysql> alter table SUser add index index1(email);
+或
+mysql> alter table SUser add index index2(email(6));
+```
+
+##### 优点
+1、减少索引的大小，存储空间小，相同的数据页能放下的索引值就越多，搜索的效率也就会越高。
+
+##### 缺点
+1、可能会增加扫描的行数，因为前缀索引一对多。
+2、无法使用覆盖索引
+3、
+
+
+##### 区分度越高，索引扫描行数越少
+可以通过下面sql判断区分度,left函数为从左开始截取字符串。
+``` sql
+select 
+count(distinct left(email,4)）as L4, 
+count(distinct left(email,5)）as L5, 
+count(distinct left(email,6)）as L6, 
+count(distinct left(email,7)）as L7,
+from SUser;
+```
+
+##### 当某些字符串前缀不好区分时：
+1、倒序存储————不推荐使用，比较麻烦
+2、新增一个hash字段，然后为hash字段加前缀索引
+例子：
+>alter table t add id_card_crc int unsigned, add index(id_card_crc);
+每次插入新记录的时候，都同时用 crc32() 这个函数得到校验码填到这个新字段。由于校验码可能存在冲突，也就是说两个不同的身份证号通过 crc32() 函数得到的结果可能是相同的，所以你的查询语句 where 部分要判断 id_card 的值是否精确相同。
+>select field_list from t where id_card_crc=crc32('input_id_card_string') and id_card='input_id_card_string'
+
+缺点：两种方式都不支持范围搜索，因为1、倒序肯定不会支持范围搜索。2、hash方法，原字段没有索引。
+
+
 #### redo log 刷新到内存的四种场景
 - InnoDB的redo log 写满了，需要把checkpoint往前推进一下，把对应的log刷新到磁盘中。
 - 节点内存不足，无法容纳新的数据页，
