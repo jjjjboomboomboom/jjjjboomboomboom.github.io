@@ -28,6 +28,18 @@
 | 写形式 | 固定的空间大小，循环写，满了就写入到磁盘中 | 追加写，不会覆盖，记录全量的备份数据   |
 
 
+![image](https://user-images.githubusercontent.com/32328586/128743051-ed96ac23-02eb-4f4d-94d4-2bcff59e45ab.png)
+
+- MySql 在5.6.2版本后，引入了binlog-checksum参数，用于验证bin log的完整性。
+- redo log和bin log有一个共同的id，叫XID。
+  - 如果碰到既有prepare、又有commit的redo log，就直接提交。
+  - 如果碰到只有prepare，没有commit的redo log，则拿着XID去bin log找对应的事务。假如bin log对应的事务完整，则提交，否则回滚事务。
+
+
+redo log 常见设置为 4 个文件、每个文件 1GB 。
+
+***
+
 ## 事务
 
 ### ACID：Atomicity原子性、Consistency一致性、Isolation隔离性、Durability持久性
