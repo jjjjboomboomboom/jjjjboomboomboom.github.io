@@ -428,3 +428,61 @@ Mysql 5.6版本开始，引入了Online的DDL，重建表的过程中，使用�
 1、将表 t 重建一次；
 2、插入一部分数据，但是插入的这些数据，用掉了一部分的预留空间；
 3、这种情况下，再重建一次表 t，就可能会出现表空间没减少，反而增加的情况。
+
+
+### 排序
+##### 全字段排序
+sort_buffer_size，即Mysql为每个线程开辟的内存大小。
+- 如果要排序的数据量小于sort_buffer_size，排序则在内存中完成。
+- 如果要排序的数据量大于sort_buffer_size，则使用磁盘临时文件进行排序，在sort buffer中排好序然后把结果存入临时文件，最后采用**归并排序**合并成一个大的临时文件。
+
+判断一个排序语句是否使用了临时文件： 从MySQL5.6版本开始，optimizer_trace 可支持把MySQL查询执行计划树打印出来。
+``` sql
+
+/* 打开optimizer_trace，只对本线程有效 */
+SET optimizer_trace='enabled=on'; 
+
+/* @a保存Innodb_rows_read的初始值 */
+select VARIABLE_VALUE into @a from  performance_schema.session_status where variable_name = 'Innodb_rows_read';
+
+/* 执行语句 */
+select city, name,age from t where city='杭州' order by name limit 1000; 
+
+/* 查看 OPTIMIZER_TRACE 输出 */
+SELECT * FROM `information_schema`.`OPTIMIZER_TRACE`\G
+
+/* @b保存Innodb_rows_read的当前值 */
+select VARIABLE_VALUE into @b from performance_schema.session_status where variable_name = 'Innodb_rows_read';
+
+/* 计算Innodb_rows_read差值 */
+select @b-@a;
+```
+
+
+
+Mysql 8.0前，OPTIMIZER_TRACE 的结果中，number_of_tmp_files 表示的是，排序过程中使用的临时文件数。
+
+
+##### rowid排序
+当mysql认为单行长度太大，会采用另一种排序方法，因为内存能同时放下的行数少，需要分成更多的临时文件，效率低。
+
+> set max_length_for_sort_data = 16;   # 控制排序行数据的长度参数，16代表，假如一行的长度超过16，则mysql认为单行太大。
+
+算法不同点：在于只会取主键和需要排序的字段，在内存中进行排序和limit后，再通过主键回原表取出对应的数据。
+
+设计思想：**如果内存够，就要多利用内存，尽量减少磁盘访问。**
+
+
+##### 排序优化举例
+当前有联合索引：city_name(city, name)
+
+> sql为：select * from t where city in ('杭州',"苏州") order by name limit 100;
+
+虽然有 (city,name) 联合索引，对于单个 city 内部，name 是递增的。但是由于这条 SQL 语句不是要单独地查一个 city 的值，而是同时查了"杭州"和" 苏州 "两个城市，因此所有满足条件的 name 就不是递增的了。也就是说，这条 SQL 语句需要排序。
+
+使用java代码避免排序：
+1、执行 select * from t where city=“杭州” order by name limit 100; 这个语句是不需要排序的，客户端用一个长度为 100 的内存数组 A 保存结果。
+2、执行 select * from t where city=“苏州” order by name limit 100; 用相同的方法，假设结果被存进了内存数组 B。
+3、现在 A 和 B 是两个有序数组，然后你可以用归并排序的思想，得到 name 最小的前 100 值，就是我们需要的结果了。
+
+
