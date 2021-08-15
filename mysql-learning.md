@@ -242,6 +242,28 @@ DML（CURD）获取的是表读锁，CUD获取的是行写锁，R获取的是行
 > 反思例子：例如cmdb修改实例的状态，需要在region视图和云服务视图中进行update操作，但考虑到云服务视图的使用比region视图要多，因此可以先对region视图进行操作（操作中会加行锁），然后再修改云服务视图中的实例记录。
 
 
+### 幻读
+> select * from t where d=5 for update; (使用的是当前读，并且加上写锁。mysql认为，for update已经给当前的行加了写锁，因此没必要再进行快照读，但是这样会造成幻读的问题。)
+> 当d列没有对应的索引情况下：
+1 : RC级别下,只会在满足条件的行加行锁(直到事务commit/rollback才会释放),不满足的直接释放; 
+2 : RR级别下会加行锁 + Gap lock,会将(0,5],(5,10],(10,15]这三个区间间隙锁起来（next-key lock是左开右闭, Gap-Lock是左开右开）;
+
+#### 解决方法
+引入gap锁，为了保持bin log的一致性。
+
+间隙锁和行锁合称 next-key lock，每个 next-key lock 是前开后闭区间。也就是说，我们的表 t 初始化以后，如果用 select * from t for update 要把整个表所有记录锁起来，就形成了 7 个 next-key lock，分别是 (-∞,0]、(0,5]、(5,10]、(10,15]、(15,20]、(20, 25]、(25, +supremum]。
+
+间隙锁的引入，可能会导致同样的语句锁住更大的范围，这其实是影响了并发度的。因为间隙锁之间不互斥，可能会导致死锁。
+间隙锁是在可重复读隔离级别下才会生效的。所以，你如果把隔离级别设置为读提交的话，就没有间隙锁了。但同时，你要解决可能出现的数据和日志不一致问题，需要把 binlog 格式设置为 row。row格式记录的是实际受影响的数据是真实删除行的主键id。row模式下保存的是每一行的前后记录，虽然占空间，但是不会因为保存命令而造成幻读。
+
+
+大家都用读提交，可是逻辑备份的时候，mysqldump 为什么要把备份线程设置成可重复读呢？
+mysqldump 使用参数single-transaction 的时候，导数据之前就会启动一个事务，来确保拿到一致性视图。而由于 MVCC 的支持，可重复读不会影响数据库的正常读写
+
+在备份期间，备份线程用的是可重复读，而业务线程用的是读提交。同时存在两种事务隔离级别，会不会有问题？
+没有问题，不管是提交读还是可重复读，都是MVCC支持，唯一的不同，就是生成快照的时间点不同，也就是能够看到的数据版本不同，即使是提交读情况下，多个不同的事物时间不也是这种情况吗，所以相互并不影响。
+
+
 ### 事务
 > begin/start transaction 命令并不是一个事务的起点，在执行到它们之后的第一个操作 InnoDB 表的语句，事务才真正启动。如果你想要马上启动一个事务，可以使用 start transaction with consistent snapshot 这个命令。
 
@@ -545,8 +567,19 @@ mysql>select l.operator from tradelog l , trade_detail d where d.tradeid=l.trade
 
 
 
+简单sql，长时间不返回：
+1、是否有索引
+2、等待MDL（MetaData Lock）
+  - 可以使用 show processlist命令查看：
+![image](https://user-images.githubusercontent.com/32328586/129484128-8a32f02e-c9ab-4fff-afb9-cec82640cf29.png)
+  - 通过查询 sys.schema_table_lock_waits 这张表，我们就可以直接找出造成阻塞的 process id，把这个连接用 kill 命令断开即可。
+![image](https://user-images.githubusercontent.com/32328586/129484130-c5e2e805-30fc-48eb-8bd3-bb0c89c12661.png)
 
-
+3、等flush
+4、行锁
+> mysql> select * from t where id=1 lock in share mode;
+由于访问 id=1 这个记录时要加读锁，如果这时候已经有一个事务在这行记录上持有一个写锁，我们的 select 语句就会被堵住。
+![image](https://user-images.githubusercontent.com/32328586/129484254-428f5ab3-2e85-4db1-bc5e-f59137351eae.png)
 
 
 
