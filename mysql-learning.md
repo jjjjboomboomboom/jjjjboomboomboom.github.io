@@ -583,6 +583,50 @@ mysql>select l.operator from tradelog l , trade_detail d where d.tradeid=l.trade
 
 
 
+##### 可重复读隔离级别：
+加锁规则：两个原则，两个优化，一个bug
+###### 原则
+- 1、加锁的基本单位是 next-key lock。
+- 2、查找过程中访问到的对象才会加锁。
+###### 优化
+- 1、索引上的等值查询，给唯一索引加锁的时候，next-key lock 退化为行锁。
+- 2、索引上的等值查询，向右遍历时且最后一个值不满足等值条件的时候，next-key lock 退化为间隙锁。
+###### bug
+- 1、唯一索引上的范围查询会访问到不满足条件的第一个值为止。
+
+``` sql
+# 初始建表语句
+CREATE TABLE `t` (
+  `id` int(11) NOT NULL,
+  `c` int(11) DEFAULT NULL,
+  `d` int(11) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `c` (`c`)
+) ENGINE=InnoDB;
+
+insert into t values(0,0,0),(5,5,5),
+(10,10,10),(15,15,15),(20,20,20),(25,25,25);
+```
+
+###### 案例一：等值查询间隙锁
+![image](https://user-images.githubusercontent.com/32328586/129607802-68d6dcbc-c98e-4c52-807c-d7865e54cc22.png)
+
+1，根据原则1，加锁单位是 next-key lock，由于id=7的记录不存在，需要找到不满足条件的第一个值，即10，于是session A 加锁范围就是 (5,10]；
+2、根据优化 2，这是一个等值查询 (id=7)，而 id=10 不满足查询条件，next-key lock 退化成间隙锁，因此最终加锁的范围是 (5,10)。
+3、所以，session B 要往这个间隙里面插入 id=8 的记录会被锁住，但是 session C 修改 id=10 这行是可以的。
+
+###### 案例二：非唯一索引等值锁
+![image](https://user-images.githubusercontent.com/32328586/129607815-b540531e-5ea7-4b5e-bd25-fe94504c0253.png)
+
+1、根据原则 1，加锁单位是 next-key lock，因此会给 (0,5]加上 next-key lock。
+2、c 是普通索引，因此仅访问 c=5 这一条记录是不能马上停下来的，需要向右遍历，查到 c=10 才放弃。根据原则 2，访问到的都要加锁，因此要给 (5,10]加 next-key lock。
+3、但是同时这个符合优化 2：等值判断，向右遍历，最后一个值不满足 c=5 这个等值条件，因此退化成间隙锁 (5,10)。
+4、根据原则 2 ，只有访问到的对象才会加锁，这个查询使用覆盖索引，并不需要访问主键索引，所以主键索引上没有加任何锁，这就是为什么 session B 的 update 语句可以执行完成。
+5、但 session C 要插入一个 (7,7,7) 的记录，就会被 session A 的间隙锁 (5,10) 锁住。
+
+> 需要注意，在这个例子中，lock in share mode 只锁覆盖索引，但是如果是 for update 就不一样了。 执行 for update 时，系统会认为你接下来要更新数据，因此会顺便给主键索引上满足条件的行加上行锁。
+
+###### 案例三：主键索引范围锁
 
 
 
