@@ -565,8 +565,6 @@ mysql>select l.operator from tradelog l , trade_detail d where d.tradeid=l.trade
 
 
 
-
-
 简单sql，长时间不返回：
 1、是否有索引
 2、等待MDL（MetaData Lock）
@@ -580,6 +578,35 @@ mysql>select l.operator from tradelog l , trade_detail d where d.tradeid=l.trade
 > mysql> select * from t where id=1 lock in share mode;
 由于访问 id=1 这个记录时要加读锁，如果这时候已经有一个事务在这行记录上持有一个写锁，我们的 select 语句就会被堵住。
 ![image](https://user-images.githubusercontent.com/32328586/129484254-428f5ab3-2e85-4db1-bc5e-f59137351eae.png)
+
+
+##### 连接数
+参数：max_connections
+调高 max_connections 的值。但这样做是有风险的。因为设计 max_connections 这个参数的目的是想保护 MySQL，如果我们把它改得太大，让更多的连接都可以进来，那么系统的负载可能会进一步加大，大量的资源耗费在权限验证等逻辑上，结果可能是适得其反，已经连接的线程拿不到 CPU 资源去执行业务的 SQL 请求。
+
+wait_timeout 参数:一个线程空闲 wait_timeout 这么多秒之后，就会被 MySQL 直接断开连接。show variables like 'wait_timeout';
+
+
+如果现在数据库确认是被连接行为打挂了，那么一种可能的做法，是让数据库跳过权限验证阶段。跳过权限验证的方法是：重启数据库，并使用–skip-grant-tables 参数启动。这样，整个 MySQL 会跳过所有的权限验证阶段，包括连接过程和语句执行过程在内。
+
+##### 慢查询
+###### 紧急加索引：
+1、在备库 B 上执行 set sql_log_bin=off，也就是不写 binlog，然后执行 alter table 语句加上索引。关闭 binlog 因为如果表数据很大，alter 之后会产生大量的日志，并且会讲变更同步到主库
+2、执行主备切换；
+3、这时候主库是 B，备库是 A。在 A 上执行 set sql_log_bin=off，然后执行 alter table 语句加上索引。
+
+###### 紧急改写sql
+MySQL 5.7 提供了 query_rewrite 功能，可以把输入的一种语句改写成另外一种模式。
+比如，语句被错误地写成了 select * from t where id + 1 = 10000，你可以通过下面的方式，增加一个语句改写规则。
+``` sql
+mysql> insert into query_rewrite.rewrite_rules(pattern, replacement, pattern_database) values ("select * from t where id + 1 = ?", "select * from t where id = ? - 1", "db1");
+
+call query_rewrite.flush_rewrite_rules();
+```
+
+##### QPS突增
+可以把压力最大的sql直接重写为select 1返回，或者limit1.
+
 
 
 
