@@ -38,6 +38,43 @@
 
 redo log 常见设置为 4 个文件、每个文件 1GB 。
 
+
+#### binlog的写入机制
+事务执行过程中，先把日志写到 binlog cache，事务提交的时候，再把 binlog cache 写到 binlog 文件中。**一个事务的 binlog 是不能被拆开的，因此不论这个事务多大，也要确保一次性写入。这就涉及到了 binlog cache 的保存问题。**
+
+系统给 binlog cache 分配了一片内存，每个线程一个，参数 binlog_cache_size 用于控制单个线程内 binlog cache 所占内存的大小。如果超过了这个参数规定的大小，就要暂存到磁盘。
+
+
+![Uploading image.png…]()
+
+![Uploading image.png…]()
+
+
+![Uploading image.png…]()
+
+
+##### 如果你的 MySQL 现在出现了性能瓶颈，而且瓶颈在 IO 上，可以通过哪些方法来提升性能呢？
+
+WAL机制主要的好处原因：
+- 1、redo log 和 binlog 都是顺序写，磁盘的顺序写比随机写速度要快；
+- 2、组提交机制，可以大幅度降低磁盘的 IOPS 消耗。
+
+
+1、设置 binlog_group_commit_sync_delay 和 binlog_group_commit_sync_no_delay_count 参数，减少 binlog 的写盘次数。这个方法是基于“额外的故意等待”来实现的，因此可能会增加语句的响应时间，但没有丢失数据的风险。
+2、将 sync_binlog 设置为大于 1 的值（比较常见是 100~1000）。这样做的风险是，主机掉电时会丢 binlog 日志。
+3、将 innodb_flush_log_at_trx_commit 设置为 2。这样做的风险是，主机掉电的时候会丢数据。
+
+
+不建议你把 innodb_flush_log_at_trx_commit 设置成 0。因为把这个参数设置成 0，表示 redo log 只保存在内存中，这样的话 MySQL 本身异常重启也会丢数据，风险太大。而 redo log 写到文件系统的 page cache 的速度也是很快的，所以将这个参数设置成 2 跟设置成 0 其实性能差不多，但这样做 MySQL 异常重启时就不会丢数据了，相比之下风险会更小。
+
+
+
+
+
+
+
+
+
 ***
 
 ## 事务
@@ -715,3 +752,6 @@ insert into t values(0,0,0),(5,5,5),
 key="t_modified"表示的是，使用了 t_modified 这个索引；
 
 Extra 字段的 Using index，表示的是使用了覆盖索引。
+
+
+## 数据可靠性
