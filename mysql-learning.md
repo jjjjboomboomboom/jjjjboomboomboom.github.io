@@ -45,12 +45,21 @@ redo log 常见设置为 4 个文件、每个文件 1GB 。
 系统给 binlog cache 分配了一片内存，每个线程一个，参数 binlog_cache_size 用于控制单个线程内 binlog cache 所占内存的大小。如果超过了这个参数规定的大小，就要暂存到磁盘。
 
 
-![Uploading image.png…]()
+双“1”配置：
+- 对于binlog，sync_binlog=1 的时候，表示每次提交事务都会执行 fsync；
+- 对于redo log，innodb_flush_log_at_trx_commit设置为 1 的时候，表示每次事务提交时都将 redo log 直接持久化到磁盘；
 
-![Uploading image.png…]()
+也就是说，一个事务完整提交前，需要等待两次刷盘，一次是 redo log（prepare 阶段），一次是 binlog。
 
+> 两阶段提交:时序上 redo log 先 prepare， 再写 binlog，最后再把 redo log commit。 前两个需要刷入到磁盘，最后的redo log commit 不需要，因为崩溃恢复只依赖于前两个。
 
-![Uploading image.png…]()
+组提交（group commit）机制：
+
+![image](https://user-images.githubusercontent.com/32328586/130348799-95808409-4b8f-4bde-a61c-83ae9ce0ab83.png)
+
+![image](https://user-images.githubusercontent.com/32328586/130348806-d238b6d2-f4a2-42e6-aa6f-36caff85779e.png)
+
+![image](https://user-images.githubusercontent.com/32328586/130348817-9f27a405-012c-4aea-8563-06bfeae3493e.png)
 
 
 ##### 如果你的 MySQL 现在出现了性能瓶颈，而且瓶颈在 IO 上，可以通过哪些方法来提升性能呢？
@@ -69,8 +78,32 @@ WAL机制主要的好处原因：
 
 
 
+#### binlog 主备同步过程：
+主库内部有一个线程，专门用于服务备库B的长连接，日志完整同步过程如下：
+1、在备库B上通过change master命令，设置主库A的IP、端口、用户名、密码，以及开始请求binlog的位置（包含文件名和日志偏移量）
+2、在备库B上执行start slave命令，这个时候备库会启动两个线程，io_thread和sql_thread，期中io_thread负责与主库建立连接
+3、主库A校验完用户名、密码后，开始按照备库B传过来的位置，从本地读取binlog，发送给备库B。
+4、备库B拿到binlog后，写到本地文件，称为中转日志（relay log）。
+5、sql_thread读取中转日志，解析出日志来了吗的命令，并执行。sql_thread当前已经是多线程来读。
 
 
+![image](https://user-images.githubusercontent.com/32328586/130349754-8d04fcda-22bc-4600-8b95-a0903d545ff2.png)
+
+- 当binlog_format=statement时，binlog记录的就是SQL的原文。 当涉及limit操作时，可能会引发主备不一致，因为不保证主备使用的索引是同一个。
+- 当 binlog_format 使用 row 格式的时候，binlog 里面记录了真实删除行的主键 id，这样 binlog 传到备库去的时候，就肯定会删除 id=4 的行，不会有主备删除不同行的问题。
+- row格式占用空间大，例如我用一个sql删除10万条数据，statement只记录一条sql，row格式会记录10万条记录id。
+因此Mysql有折中的方案，例如mixed格式的binlog。MySQL 自己会判断这条 SQL 语句是否可能引起主备不一致，如果有可能，就用 row 格式，否则就用 statement 格式。（mixed格式的bin log现在使用得不多）
+
+现在越来越多场景会使用row格式，因为即使是Delete场景，也会把记录的整行信息保存起来，也可以用来**恢复数据**
+MariaDB 的Flashback工具就是基于row的整行信息恢复数据的。
+
+
+
+> 不能直接用statement语句来直接拷贝出来恢复数据。举例：insert into table values(1,1,now())。当恢复数据的时候，获取的是恢复数据的时候的时间。需要用到对应的工具，因为bin log在记录event的时候，会记录当时的时间戳。用 binlog 来恢复数据的标准做法是，用 mysqlbinlog 工具解析出来，然后把解析结果整个发给 MySQL 执行。
+
+``` sql
+mysqlbinlog master.000001  --start-position=2738 --stop-position=2973 | mysql -h127.0.0.1 -P13000 -u$user -p$pwd;
+```
 
 
 
