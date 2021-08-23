@@ -873,4 +873,5 @@ coordinator在分发时的基本要求
 缺点：
 对于“表上没主键”和“外键约束”的场景，WRITESET 策略也是没法并行的，也会暂时退化为单线程模型。
 
+![image](https://user-images.githubusercontent.com/32328586/130483845-c5ccd2cc-7765-4373-a2d4-757488a80cca.png)
 
