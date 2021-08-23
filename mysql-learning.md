@@ -803,14 +803,74 @@ Extra 字段的 Using index，表示的是使用了覆盖索引。
 - 大表DDL（计划内的 DDL，建议使用 gh-ost 方案）
 - 备库的并行复制能力
 
+### 并行复制
+![image](https://user-images.githubusercontent.com/32328586/130478174-c3915f79-f056-462f-b877-6b4f3241b39f.png)
 
 
+coordinator在分发时的基本要求
+- 不能造成更新覆盖。即更新同一行的两个事务，必须分发到同一个worker中
+- 同一个事务不能被拆开，必须放到同一个worker中。
+
+#### 按表分发策略
+1、如果跟所有 worker 都不冲突，coordinator 线程就会把这个事务分配给最空闲的 woker;
+2、如果跟多于一个 worker 冲突，coordinator 线程就进入等待状态，直到和这个事务存在冲突关系的 worker 只剩下 1 个；
+3、如果只跟一个 worker 冲突，coordinator 线程就会把这个事务分配给这个存在冲突关系的 worker。
+
+按表分发的方案，在多个表负载均匀的场景里应用效果很好。但是，如果碰到热点表，比如所有的更新事务都会涉及到某一个表的时候，所有事务都会被分配到同一个 worker 中，就变成单线程复制了。
+
+#### 按行分发策略
+> 要求binlog格式必须是row格式，因为原则是，如果两个事务没有更新相同的行，他们可以在备库上并行地执行。但判断事务更新哪些行，需要用到row格式存的主键id。
+
+- 要能够从 binlog 里面解析出表名、主键值和唯一索引的值。也就是说，主库的 binlog 格式必须是 row；
+- 表必须有主键；
+- 不能有外键。表上如果有外键，级联更新的行不会记录在 binlog 中，这样冲突检测就不准确。
 
 
+#### MySQL 5.6 版本的并行复制策略，只支持按库并行。
+
+#### MariaDB的并行复制策略，参考redo log的组提交（group commit）
+- 能够在同一组里提交的事务，一定不会修改同一行；
+- 主库上可以并行执行的事务，备库上也一定是可以并行执行的。
+- 核心：所有处于commit状态的事务可以并行（一起commit的事务可以并行）
+
+1、在一组里面一起提交的事务，有一个相同的 commit_id，下一组就是 commit_id+1；
+2、commit_id 直接写到 binlog 里面；
+3、传到备库应用的时候，相同 commit_id 的事务分发到多个 worker 执行；
+4、这一组全部执行完成后，coordinator 再去取下一批。
 
 
+缺点：这个策略有一个问题，它并没有实现“真正的模拟主库并发度”这个目标。在主库上，一组事务在 commit 的时候，下一组事务是同时处于“执行中”状态的。而MariaDB在并行复制的时候，要等第一组事务完全执行完成后，第二组事务才能开始执行，这样系统的吞吐量就不够。
 
 
+#### MySQL 5.7 的并行复制策略
+提供参数slave-parallel-type来控制并行复制策略
+- 配置为 DATABASE，表示使用 MySQL 5.6 版本的按库并行策略；
+- 配置为 LOGICAL_CLOCK，表示的就是类似 MariaDB 的策略。不过，MySQL 5.7 这个策略，针对并行度做了优化。
 
+![image](https://user-images.githubusercontent.com/32328586/130481015-9f83ec0e-e06f-48f2-abdb-ce2dbda20dbf.png)
+
+其实，不用等到 commit 阶段，只要能够到达 redo log prepare 阶段，就表示事务已经通过锁冲突的检验了。
+
+因此，MySQL 5.7 并行复制策略的思想是：
+- 同事处于prepare状态的事务，在备库执行是可以并行的
+- 处于prepare状态的事务，与处于commit状态的事务之间，在备库执行时也是可以并行的。
+
+
+![image](https://user-images.githubusercontent.com/32328586/130481304-b0406ca4-6995-42bb-9227-fe94a54c8e14.png)
+
+
+#### MySQL 5.7.22 的并行复制策略
+新增了一个参数 binlog-transaction-dependency-tracking，用来控制是否启用这个新策略
+- COMMIT_ORDER，表示的就是前面介绍的，根据同时进入 prepare 和 commit 来判断是否可以并行的策略。
+- WRITESET，表示的是对于事务涉及更新的每一行，计算出这一行的 hash 值，组成集合 writeset。如果两个事务没有操作相同的行，也就是说它们的 writeset 没有交集，就可以并行。
+- WRITESET_SESSION，是在 WRITESET 的基础上多了一个约束，即在主库上同一个线程先后执行的两个事务，在备库执行的时候，要保证相同的先后顺序。
+
+对比自己实现的按行分发策略，优点如下：
+- writeset 是在主库生成后直接写入到 binlog 里面的，这样在备库执行的时候，不需要解析 binlog 内容（event 里的行数据），节省了很多计算量；
+- 不需要把整个事务的 binlog 都扫一遍才能决定分发到哪个 worker，更省内存；
+- 由于备库的分发策略不依赖于 binlog 内容，所以 binlog 是 statement 格式也是可以的。
+
+缺点：
+对于“表上没主键”和“外键约束”的场景，WRITESET 策略也是没法并行的，也会暂时退化为单线程模型。
 
 
