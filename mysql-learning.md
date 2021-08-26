@@ -877,3 +877,91 @@ coordinator在分发时的基本要求
 
 
 
+### 延迟读的解决办法
+- 强制走主库方案
+- sleep方案
+- 判断主备无延迟方案
+- 配合semi-sync方案
+- 等主库位点方案
+- 等GTID方案
+
+#### 强制走主库方案
+查询请求分类，分为走主库、走从库的请求。这个方案是用得最多的。
+
+#### sleep方案
+主库更新后，读从库前先sleep一下，具体方案，类似于执行一条select sleep(1)命令。
+
+1、具体sleep多少秒，不确定
+2、不保证精确性
+
+#### 判断主备无延迟方案
+show slave status 结果里的 seconds_behind_master 参数的值，可以用来衡量主备延迟时间的长短。
+
+1、确保主备无延迟的方法：每次从库执行查询请求前，先判断seconds_behind_master是否已经等于0，如果不等于0，就必须等到这个参数变为0才能执行查询请求。参数单位是秒，不太准确，下面的两种方法比较准确。
+2、对比位点确保主备无延迟。
+- Master_Log_File和Read_Master_Log_Pos，表示读到的主库的最新位点；
+- Relay_Master_Log_File和Exec_Master_Log_Pos表示备库执行的最新位点。
+如果Master_Log_File 和 Relay_Master_Log_File、Read_Master_Log_Pos 和 Exec_Master_Log_Pos 这两组值完全相同，就表示接收到的日志已经同步完成。
+
+![image](https://user-images.githubusercontent.com/32328586/131007842-844555d9-3727-4c20-a184-e73ff21be5d0.png)
+
+3、对比GTID集合确保主备无延迟
+- Auto_Position=1，表示这对主备关系使用了GTID协议。
+- Retrieved_Gtid_Set，是备库收到的所有日志GTID集合；
+- Executed_Gtid_Set，是备库所有已经执行完成的GTID集合。
+
+如果两个集合相同，表示备库接收到的日志都已经同步完成。
+
+#### 配合semi-sync
+问题：
+![image](https://user-images.githubusercontent.com/32328586/131008569-798fa307-0fbc-4041-9a72-59c5a296c64d.png)
+
+解决：引入半同步复制，即semi-sync replication
+1、事务提交时，主库把binlog发给从库；
+2、从库收到binlog后，发回给主库一个ack，表示收到了（收到了就可以，因为有位点、GTID等判断收到后是否执行完成）；
+3、主库收到这个ack以后，才能给客户端返回“事务完成”的确认。
+
+缺点
+1、一主多从的时候，在某些从库执行查询请求会存在过期读的现象；因为收到第一个ack后，就给客户端返回事务完成了。
+2、在持续延迟的情况下，可能出现过度等待的问题。
+
+#### 等主库位点方案
+
+``` sql
+select master_pos_wait(file, pos[,timeout]);
+```
+命令逻辑：
+1、这条命令是在从库执行；
+2、参数file和pos指主库上的文件名和位置。
+3、timeout可选，设置为正整数N，表示这个函数最多等待N秒。
+
+**这个命令正常返回的结果是一个正整数 M，表示从命令开始执行，到应用完 file 和 pos 表示的 binlog 位置，执行了多少事务。**
+
+可以如下逻辑：
+1、trx1事务更新完成后，马上执行show master status得到当前主库执行到的File和Position。
+2、选定一个从库执行查询语句
+3、在从库上执行select master_pos_wait(File,Position,1);
+4、如果返回值是 >= 0的正整数，则在这个从库执行查询语句；
+5、否则到主库执行查询语句。
+
+
+#### GTID方案
+``` sql
+select wait_for_executed_gtid_set(gtid_set,1);
+```
+这条命令的逻辑是：
+1、等待，直到这个库执行的事务中包含传入的 gtid_set，返回 0；
+2、超时返回 1。
+
+在前面等位点的方案中，我们执行完事务后，还要主动去主库执行 show master status。而 MySQL 5.7.6 版本开始，允许在执行完更新类事务后，把这个事务的 GTID 返回给客户端，这样等 GTID 的方案就可以减少一次查询。
+
+所以逻辑变成了如下：
+1、trx1事务，在主库完成更新后，从返回包直接获取这个事务的GTID，记为gtid1；
+2、选定一个从库执行查询语句
+3、在从库上执行select wait_for_executed_gtid_set(gtid1,1);
+4、如果返回值是0，则在这个从库执行查询语句；
+5、否则，到主库执行查询语句。
+
+
+怎么能够让 MySQL 在执行事务后，返回包中带上 GTID 呢？
+只需要将参数 session_track_gtids 设置为 OWN_GTID，然后通过 API 接口 mysql_session_track_get_first 从返回包解析出 GTID 的值即可。
