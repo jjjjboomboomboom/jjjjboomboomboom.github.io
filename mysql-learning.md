@@ -965,3 +965,64 @@ select wait_for_executed_gtid_set(gtid_set,1);
 
 怎么能够让 MySQL 在执行事务后，返回包中带上 GTID 呢？
 只需要将参数 session_track_gtids 设置为 OWN_GTID，然后通过 API 接口 mysql_session_track_get_first 从返回包解析出 GTID 的值即可。
+
+
+
+
+### 判断表是否正常
+#### select 1
+
+并发连接和并发查询
+- 并发连接：max_connection
+- 并发查询：innodb_thread_concurrency
+
+show processlist 的结果里，看到的几千个连接，指的就是并发连接。而“当前正在执行”的语句，才是我们所说的并发查询。
+线程进入锁等待后，并发线程的计数会减一。
+
+当同时在执行的语句超过了设置的 innodb_thread_concurrency 的值，这时候系统其实已经不行了，但是通过 select 1 来检测系统，会认为系统还是正常的。
+
+
+#### 查表判断
+在系统库创建一个表，例如命名为health_check，里面只放一行数据，然后定期执行
+``` sql
+select *from mysql.health_check;
+```
+
+该方法能检测由于并发线程过多导致的数据库不可用情况。
+但存在一种可能，即磁盘空间满了后，更新事务要写binlog，但因为空间不足，导致更新语句和事务提交的commit语句被堵住。但是系统还是可以读数据。
+
+疑问？像发现系统并发查询线程数不足后，这种要怎么处理？？？
+
+#### 更新判断
+常见做法是放一个 timestamp 字段，用来表示最后一次执行检测的时间。
+``` sql
+update mysql.health_check set t_modified=now();
+```
+
+假如主备关系为双M结构，可能会出现行冲突，可能会导致主备同步停止。
+原因
+> 如果表中只有一列t_modified，那么在主库修改t_modified事务还没有提交，而备库的修改t_modified的事务先提交并且binlog传给了主库，此时传给主库的binlog回放会被阻塞。等主库修改t_modified事务提交之后，binlog传给备库，以及备库的binlog应用的时候发现要更新的数据不能存在了，主备复制报1032的错误。导致主备复制停止 如果表中多存在一个主键列，那么上面的情况不会发生，但是主备的数据会不一致（这个是重点）。
+
+为了让主备之间的更新不产生冲突，我们可以在 mysql.health_check 表上存入多行数据，并用 A、B 的 server_id 做主键。
+``` sql
+mysql> CREATE TABLE `health_check` (
+  `id` int(11) NOT NULL,
+  `t_modified` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB;
+
+/* 检测命令 */
+insert into mysql.health_check(id, t_modified) values (@@server_id, now()) on duplicate key update t_modified=now();
+```
+
+#### 内部统计
+MySQL 5.6 版本以后提供的 performance_schema 库，就在 file_summary_by_event_name 表里统计了每次 IO 请求的时间。
+
+
+
+
+
+
+
+
+
