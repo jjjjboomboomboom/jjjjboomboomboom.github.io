@@ -521,6 +521,40 @@ Mysql 5.6版本开始，引入了Online的DDL，重建表的过程中，使用�
 2、插入一部分数据，但是插入的这些数据，用掉了一部分的预留空间；
 3、这种情况下，再重建一次表 t，就可能会出现表空间没减少，反而增加的情况。
 
+### 恢复误删的数据
+- 使用 delete 语句误删数据行；
+- 使用 drop table 或者 truncate table 语句误删数据表；
+- 使用 drop database 语句误删数据库；
+- 使用 rm 命令误删整个 MySQL 实例。
+
+#### 使用 delete 语句误删数据行
+可以使用Flashback工具通过闪回把数据恢复，原理是通过“修改”binlog，拿回原库执行。需要确保binlog_format=row和binlog_row_image=FULL。
+具体“修改”：
+1、对于insert语句，对应的binlog event类型是Write_rows_event，把他改为Delete_rows_event即可。
+2、对于delete语句，将Delete_rows_event改为Write_rows_event。
+3、对于updata语句，bin log记录了数据行修改前和修改后的值，把Update_rows对应的两行对调位置即可。
+
+
+不建议你直接在主库上执行这些操作。
+恢复数据比较安全的做法，是恢复出一个备份，或者找一个从库作为临时库，在这个临时库上执行这些操作，然后再将确认过的临时库的数据，恢复回主库。
+
+#### 误删库/表
+使用全量备份，加增量日志的方式
+
+1、取最近一次全量备份，假设这个库是一天一备，上次备份是当天 0 点；
+2、用备份恢复出一个临时库；
+3、从日志备份里面，取出凌晨 0 点之后的日志；
+4、把这些日志，除了误删除数据的语句外，全部应用到临时库。
+
+
+![image](https://user-images.githubusercontent.com/32328586/131380889-9fa0132c-e095-4e0b-8578-577f4ad65b45.png)
+
+一种加速的方法是，在用备份恢复出临时实例之后，将这个临时实例设置成线上备库的从库。
+好处是：1、在 start slave 之前，先通过执行﻿﻿change replication filter replicate_do_table = (tbl_name) 命令，就可以让临时库只同步误操作的表；
+2、可以用上并行复制技术，来加速整个数据恢复过程
+
+
+
 
 ### 排序
 ##### 全字段排序
