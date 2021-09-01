@@ -1053,10 +1053,27 @@ insert into mysql.health_check(id, t_modified) values (@@server_id, now()) on du
 MySQL 5.6 版本以后提供的 performance_schema 库，就在 file_summary_by_event_name 表里统计了每次 IO 请求的时间。
 
 
+### 全表扫描
+#### server端
+MySQL 是“边读边发的”。
+服务端并不需要保存一个完整的结果集。取数据和发数据的流程是这样的：
+- 获取一行，写到 net_buffer 中。这块内存的大小是由参数 net_buffer_length 定义的，默认是 16k。
+- 重复获取行，直到 net_buffer 写满，调用网络接口发出去。
+- 如果发送成功，就清空 net_buffer，然后继续取下一行，并写入 net_buffer。
+- 如果发送函数返回 EAGAIN 或 WSAEWOULDBLOCK，就表示本地网络栈（socket send buffer）写满了，进入等待。直到网络栈重新可写，再继续发送。
+
+mysql_sotre_result把结果保存在客户端本地，直接把所有结果读过来； mysql_use_result则是客户端一行一行的从Server读取数据，如果每行数据都有业务处理逻辑的话Server就要等待，会造成长事务。
+假设有一个业务的逻辑比较复杂，每读一行数据以后要处理的逻辑如果很慢，而且返回数据集不大，建议使用mysql_store_result。否则容易导致客户端要过很久才会取下一行数据，导致服务端发送阻塞。
+
+如果你在自己负责维护的 MySQL 里看到很多个线程都处于“Sending to client”这个状态，如果要快速减少处于这个状态的线程的话，将 net_buffer_length 参数设置为一个更大的值是一个可选方案。
 
 
+#### 引擎端 InnoDB
+change buffer 还有加速查询的作用，加速效果，依赖于一个重要的指标，即：内存命中率。可以通过 show engine innodb status
 
+InnoDB Buffer Pool 的大小是由参数 innodb_buffer_pool_size 确定的，一般建议设置成可用物理内存的 60%~80%。
 
+InnoDB 内存管理用的是最近最少使用 (Least Recently Used, LRU) 算法，这个算法的核心就是淘汰最久未使用的数据。
 
-
+针对全表扫描冷数据，做了优化：在 InnoDB 实现上，按照 5:3 的比例把整个 LRU 链表分成了 young 区域和 old 区域。图中 LRU_old 指向的就是 old 区域的第一个位置，是整个链表的 5/8 处。也就是说，靠近链表头部的 5/8 是 young 区域，靠近链表尾部的 3/8 是 old 区域。
 
