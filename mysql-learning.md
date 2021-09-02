@@ -1077,3 +1077,64 @@ InnoDB 内存管理用的是最近最少使用 (Least Recently Used, LRU) 算法
 
 针对全表扫描冷数据，做了优化：在 InnoDB 实现上，按照 5:3 的比例把整个 LRU 链表分成了 young 区域和 old 区域。图中 LRU_old 指向的就是 old 区域的第一个位置，是整个链表的 5/8 处。也就是说，靠近链表头部的 5/8 是 young 区域，靠近链表尾部的 3/8 是 old 区域。
 
+
+### join
+``` sql
+# 表结构
+
+CREATE TABLE `t2` (
+  `id` int(11) NOT NULL,
+  `a` int(11) DEFAULT NULL,
+  `b` int(11) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `a` (`a`)
+) ENGINE=InnoDB;
+
+drop procedure idata;
+delimiter ;;
+create procedure idata()
+begin
+  declare i int;
+  set i=1;
+  while(i<=1000)do
+    insert into t2 values(i, i, i);
+    set i=i+1;
+  end while;
+end;;
+delimiter ;
+call idata();
+
+create table t1 like t2;
+insert into t1 (select * from t2 where id<=100)
+```
+
+#### Index Nested-Loop join
+> select * from t1 straight_join t2 on (t1.a=t2.a);
+
+由于驱动表走全表扫描，然后被驱动表走索引扫描。假设驱动表有N行数据，被驱动表有M行数据。
+复杂度类似于N + N*2*log2M     （2是因为走了两次索引，一次a索引树，一次主键索引树）
+
+两个结论：
+- 使用join语句，性能比强行拆成多个单表执行SQL语句的性能要好。
+- 如果使用join语句的话，需要让小表做驱动表。
+
+#### Simple Nested-Loop Join
+> select * from t1 straight_join t2 on (t1.a=t2.b);
+
+由于表 t2 的字段 b 上没有索引，因此再用图 2 的执行流程时，每次到 t2 去匹配的时候，就要做一次全表扫描。
+
+复杂度相当于M\*N，如果 t1 和 t2 都是 10 万行的表（当然了，这也还是属于小表的范围），就要扫描 100 亿行,过于笨重。
+
+当然，MySQL 也没有使用这个 Simple Nested-Loop Join 算法，而是使用了另一个叫作“Block Nested-Loop Join”的算法，简称 BNL。
+
+
+#### Block Nested-Loop Join
+被驱动表上没有可用的索引，算法的流程是这样的：
+
+
+
+
+
+
+
+
