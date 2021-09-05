@@ -818,7 +818,11 @@ insert into t values(0,0,0),(5,5,5),
 
 key="t_modified"表示的是，使用了 t_modified 这个索引；
 
-Extra 字段的 Using index，表示的是使用了覆盖索引。
+Extra 字段的 
+- Using index，表示的是使用了覆盖索引。
+- Using temporaty 表示的是使用了临时表。
+- Using filesort 表示需要排序。
+- 
 
 
 ## 数据可靠性
