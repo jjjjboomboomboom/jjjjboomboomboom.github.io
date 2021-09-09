@@ -1216,3 +1216,70 @@ select t1.b,t2.* from  t2  straight_join t1 on (t1.b=t2.b) where t2.id<=100;
 - 锁粒度问题
 内存表不支持行锁，只支持表锁。因此，一张表只要有更新，就会堵住其他所有在这个表上的读写操作。
 - 数据持久化问题
+
+
+
+
+### 分表
+- MySQL 在第一次打开分区表的时候，需要访问所有的分区；
+- 在 server 层，认为这是同一张表，因此所有分区共用同一个 MDL 锁；
+- 在引擎层，认为这是不同的表，因此 MDL 锁之后的执行过程，会根据分区表规则，只访问必要的分区。
+
+优点：
+- 方便清理历史数据
+- 按条件查询，速度快
+
+
+### 自增id
+> 表定义的自增值达到上限后的逻辑是：再申请下一个 id 时，得到的值保持不变。
+
+#### InnoDB 系统自增 row_id
+如果你创建的 InnoDB 表没有指定主键，那么 InnoDB 会给你创建一个不可见的，长度为 6 个字节的 row_id。
+
+在 InnoDB 逻辑里，申请到 row_id=N 后，就将这行数据写入表中；如果表中已经存在 row_id=N 的行，新写入的行就会覆盖原有的行。
+还不如定义的主键，会报冲突。
+
+#### Xid
+redo log 和 binlog 相配合的时候，提到了它们有一个共同的字段叫作 Xid。
+
+Xid生成过程：
+MySQL 内部维护了一个全局变量 global_query_id，每次执行语句的时候将它赋值给 Query_id，然后给这个变量加 1。如果当前语句是这个事务执行的第一条语句，那么 MySQL 还会同时把 Query_id 赋值给这个事务的 Xid。
+
+而 global_query_id 是一个纯内存变量，重启之后就清零了。所以你就知道了，在同一个数据库实例中，不同事务的 Xid 也是有可能相同的。
+但是 MySQL 重启之后会重新生成新的 binlog 文件，这就保证了，同一个 binlog 文件里，Xid 一定是惟一的。
+
+虽然 MySQL 重启不会导致同一个 binlog 里面出现两个相同的 Xid，但是如果 global_query_id 达到上限后，就会继续从 0 开始计数。从理论上讲，还是就会出现同一个 binlog 里面出现相同 Xid 的场景。
+
+
+#### Innodb trx_id
+Xid 是由 server 层维护的。InnoDB 内部使用 Xid，就是为了能够在 InnoDB 事务和 server 之间做关联。但是，InnoDB 自己的 trx_id，是另外维护的。
+
+InnoDB 数据可见性的核心思想是：每一行数据都记录了更新它的 trx_id，当一个事务读到一行数据的时候，判断这个数据是否可见的方法，就是通过事务的一致性视图与这行数据的 trx_id 做对比。
+
+对于正在执行的事务，你可以从 information_schema.innodb_trx 表中看到事务的 trx_id。
+
+> 对于只读事务，InnoDB 并不会分配 trx_id。
+
+
+由于低水位值会持续增加，而事务 id 从 0 开始计数，就导致了系统在这个时刻之后，所有的查询都会出现脏读的。
+并且，MySQL 重启时 max_trx_id 也不会清 0，也就是说重启 MySQL，这个 bug 仍然存在。
+
+
+#### thread_id
+thread_id_counter 定义的大小是 4 个字节，因此达到 232-1 后，它就会重置为 0，然后继续增加。但是，你不会在 show processlist 里看到两个相同的 thread_id。
+
+
+![image](https://user-images.githubusercontent.com/32328586/132731164-b93d9237-d05c-4abf-8e50-f0a23f72c53b.png)
+
+
+
+
+
+
+
+
+
+
+
+
+
